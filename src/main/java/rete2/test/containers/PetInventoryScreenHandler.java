@@ -8,25 +8,27 @@ import net.minecraft.item.ItemStack;
 import net.minecraft.screen.NamedScreenHandlerFactory;
 import net.minecraft.screen.ScreenHandler;
 import net.minecraft.screen.slot.Slot;
+import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.text.Text;
 import rete2.test.ArcaniaTestMod;
 import rete2.test.entities.PetEntity;
 import rete2.test.init.TestModInventories;
+import rete2.test.logic.PetInventoryStorage;
+import rete2.test.network.PetInventoryPacket;
 
+import java.util.Map;
 import java.util.UUID;
 
 public class PetInventoryScreenHandler extends ScreenHandler {
     private final PetEntity pet;
     private Inventory petInventory;
     private final UUID petUuid;
-    private boolean inventoryUpdated;
 
     public PetInventoryScreenHandler(int syncId, PlayerInventory playerInventory, PetEntity pet, UUID petUuid) {
         super(TestModInventories.PET_INVENTORY_SCREEN_HANDLER, syncId);
         this.pet = pet;
         this.petUuid = petUuid;
         this.petInventory = pet != null ? pet.getInventory() : new SimpleInventory(108);
-        this.inventoryUpdated = false;
 
         if (pet != null) {
             checkAccess(playerInventory.player, pet);
@@ -36,45 +38,49 @@ public class PetInventoryScreenHandler extends ScreenHandler {
         int ySize = 256;
 
         int rowLength = 12;
-        for (int chestRow = 0; chestRow < 108 / rowLength; chestRow++)
-        {
-            for (int chestCol = 0; chestCol < rowLength; chestCol++)
-            {
-                addSlot(new Slot(petInventory, chestCol + chestRow * rowLength, 12 + chestCol * 18, 8 + chestRow * 18));
+        for (int chestRow = 0; chestRow < 108 / rowLength; chestRow++) {
+            for (int chestCol = 0; chestCol < rowLength; chestCol++) {
+                int slotIndex = chestCol + chestRow * rowLength;
+                addSlot(new Slot(petInventory, slotIndex, 12 + chestCol * 18, 8 + chestRow * 18) {
+                    @Override
+                    public void setStack(ItemStack stack) {
+                        ItemStack oldStack = this.getStack();
+                        super.setStack(stack);
+                        if (!playerInventory.player.getWorld().isClient && (!ItemStack.areEqual(oldStack, stack))) {
+                            PetInventoryPacket.sendSlotUpdateToClient((ServerPlayerEntity) playerInventory.player, petUuid, slotIndex, stack);
+                            PetInventoryStorage.saveInventoryAsync(playerInventory.player.getUuid(), (SimpleInventory) petInventory);
+                        }
+                    }
+                });
             }
         }
-
 
         int leftCol = (xSize - 162) / 2 + 1;
 
-        for (int playerInvRow = 0; playerInvRow < 3; playerInvRow++)
-        {
-            for (int playerInvCol = 0; playerInvCol < 9; playerInvCol++)
-            {
-                addSlot(new Slot(playerInventory, playerInvCol + playerInvRow * 9 + 9, leftCol + playerInvCol * 18, ySize - (4 - playerInvRow) * 18
-                        - 10));
+        for (int playerInvRow = 0; playerInvRow < 3; playerInvRow++) {
+            for (int playerInvCol = 0; playerInvCol < 9; playerInvCol++) {
+                addSlot(new Slot(playerInventory, playerInvCol + playerInvRow * 9 + 9, leftCol + playerInvCol * 18, ySize - (4 - playerInvRow) * 18 - 10));
             }
-
         }
 
-        for (int hotbarSlot = 0; hotbarSlot < 9; hotbarSlot++)
-        {
+        for (int hotbarSlot = 0; hotbarSlot < 9; hotbarSlot++) {
             addSlot(new Slot(playerInventory, hotbarSlot, leftCol + hotbarSlot * 18, ySize - 24));
         }
-        System.out.println("PetInventoryScreenHandler created for pet: " + (pet != null ? pet.getUuidAsString() : "null") + ", UUID: " + (petUuid != null ? petUuid.toString() : "null"));
+        ArcaniaTestMod.LOGGER.info("PetInventoryScreenHandler created for pet: {}, UUID: {}", pet != null ? pet.getUuidAsString() : "null", petUuid);
     }
 
-    public void updatePetInventory(UUID petUuid, Inventory inventory) {
-        if (this.petUuid != null && this.petUuid.equals(petUuid) && !inventoryUpdated) {
-            this.petInventory = inventory;
-            for (int i = 0; i < this.slots.size() && i < inventory.size(); i++) {
-                System.out.println("Setting slot " + i + " to " + inventory.getStack(i));
-                this.slots.get(i).setStack(inventory.getStack(i));
+    public void updatePetInventory(UUID petUuid, Map<Integer, ItemStack> slotUpdates) {
+        if (this.petUuid != null && this.petUuid.equals(petUuid)) {
+            for (Map.Entry<Integer, ItemStack> entry : slotUpdates.entrySet()) {
+                int slot = entry.getKey();
+                if (slot >= 0 && slot < petInventory.size()) {
+                    petInventory.setStack(slot, entry.getValue());
+                    this.slots.get(slot).setStack(entry.getValue());
+                }
             }
-            this.inventoryUpdated = true;
-            System.out.println("Updated PetInventoryScreenHandler inventory for UUID: " + petUuid);
+            ArcaniaTestMod.LOGGER.info("Updated PetInventoryScreenHandler inventory for UUID: {}, slots: {}", petUuid, slotUpdates.keySet());
         } else {
-            System.out.println("Skipped update: UUID mismatch or already updated. Expected " + petUuid + ", got " + this.petUuid + ", updated: " + inventoryUpdated);
+            ArcaniaTestMod.LOGGER.warn("Skipped update: UUID mismatch. Expected {}, got {}", petUuid, this.petUuid);
         }
     }
 
@@ -111,8 +117,20 @@ public class PetInventoryScreenHandler extends ScreenHandler {
             } else {
                 slot.markDirty();
             }
+            if (!player.getWorld().isClient) {
+                PetInventoryPacket.sendSlotUpdateToClient((ServerPlayerEntity) player, petUuid, slotIndex, originalStack);
+                PetInventoryStorage.saveInventoryAsync(player.getUuid(), (SimpleInventory) petInventory);
+            }
         }
         return stack;
+    }
+
+    @Override
+    public void onClosed(PlayerEntity player) {
+        super.onClosed(player);
+        if (!player.getWorld().isClient && pet != null) {
+            PetInventoryStorage.saveInventoryAsync(player.getUuid(), (SimpleInventory) petInventory);
+        }
     }
 
     public static class Factory implements NamedScreenHandlerFactory {

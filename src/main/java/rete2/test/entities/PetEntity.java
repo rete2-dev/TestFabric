@@ -9,9 +9,7 @@ import net.minecraft.entity.passive.PassiveEntity;
 import net.minecraft.entity.passive.TameableEntity;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.inventory.SimpleInventory;
-import net.minecraft.item.ItemStack;
 import net.minecraft.nbt.NbtCompound;
-import net.minecraft.nbt.NbtList;
 import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.server.world.ServerWorld;
 import net.minecraft.util.ActionResult;
@@ -20,7 +18,9 @@ import net.minecraft.util.math.Vec3d;
 import net.minecraft.world.EntityView;
 import net.minecraft.world.World;
 import org.jetbrains.annotations.Nullable;
+import rete2.test.ArcaniaTestMod;
 import rete2.test.containers.PetInventoryScreenHandler;
+import rete2.test.logic.PetInventoryStorage;
 import rete2.test.logic.PetManager;
 import rete2.test.network.PetInventoryPacket;
 import software.bernie.geckolib.animatable.GeoEntity;
@@ -46,6 +46,9 @@ public class PetEntity extends TameableEntity implements GeoEntity {
         super(entityType, world);
         setInvulnerable(true);
         initializeGoals();
+        if (!world.isClient && getOwnerUuid() != null) {
+            loadInventoryAsync();
+        }
     }
 
     public SimpleInventory getInventory() {
@@ -99,6 +102,7 @@ public class PetEntity extends TameableEntity implements GeoEntity {
                     setOwner(owner);
                     setTamed(true);
                     initializeGoals();
+                    ArcaniaTestMod.LOGGER.info("Restored owner for pet: {} to player: {}", getUuid(), owner.getUuid());
                 }
             }
         }
@@ -125,6 +129,31 @@ public class PetEntity extends TameableEntity implements GeoEntity {
         return null;
     }
 
+    private void loadInventoryAsync() {
+        if (getOwnerUuid() != null) {
+            PetInventoryStorage.loadInventoryAsync(getOwnerUuid()).thenAccept(inventory -> {
+                if (!this.isRemoved()) {
+                    for (int i = 0; i < Math.min(this.inventory.size(), inventory.size()); i++) {
+                        this.inventory.setStack(i, inventory.getStack(i));
+                    }
+                    ArcaniaTestMod.LOGGER.info("Loaded inventory for pet of player: {}", getOwnerUuid());
+                } else {
+                    ArcaniaTestMod.LOGGER.warn("Pet removed before inventory could be loaded for player: {}", getOwnerUuid());
+                }
+            }).exceptionally(throwable -> {
+                ArcaniaTestMod.LOGGER.error("Failed to load inventory for pet of player: {}", getOwnerUuid(), throwable);
+                return null;
+            });
+        }
+    }
+
+    private void saveInventorySync() {
+        if (getOwnerUuid() != null) {
+            PetInventoryStorage.saveInventorySync(getOwnerUuid(), this.inventory);
+            ArcaniaTestMod.LOGGER.info("Synchronously saved inventory for pet of player: {}", getOwnerUuid());
+        }
+    }
+
     @Override
     public NbtCompound writeNbt(NbtCompound nbt) {
         super.writeNbt(nbt);
@@ -135,17 +164,8 @@ public class PetEntity extends TameableEntity implements GeoEntity {
         if (getOwner() != null) {
             nbt.putString("OwnerName", getOwner().getName().getString());
         }
-        NbtList inventoryList = new NbtList();
-        for (int i = 0; i < inventory.size(); i++) {
-            ItemStack stack = inventory.getStack(i);
-            if (!stack.isEmpty()) {
-                NbtCompound itemNbt = new NbtCompound();
-                itemNbt.putByte("Slot", (byte) i);
-                stack.writeNbt(itemNbt);
-                inventoryList.add(itemNbt);
-            }
-        }
-        nbt.put("Inventory", inventoryList);
+        saveInventorySync();
+        ArcaniaTestMod.LOGGER.info("Wrote NBT for pet: {}", getUuid());
         return nbt;
     }
 
@@ -159,23 +179,17 @@ public class PetEntity extends TameableEntity implements GeoEntity {
         if (nbt.contains("OwnerName")) {
             ownerName = nbt.getString("OwnerName");
         }
-        inventory.clear();
-        NbtList inventoryList = nbt.getList("Inventory", 10);
-        for (int i = 0; i < inventoryList.size(); i++) {
-            NbtCompound itemNbt = inventoryList.getCompound(i);
-            int slot = itemNbt.getByte("Slot") & 255;
-            if (slot < inventory.size()) {
-                inventory.setStack(slot, ItemStack.fromNbt(itemNbt));
-            }
-        }
         setInvulnerable(true);
         initializeGoals();
         ownerCheckTicks = 0;
-        // Регистрируем питомца в PetManager после загрузки
         if (getOwnerUuid() != null && getWorld() instanceof ServerWorld serverWorld) {
             PlayerEntity owner = serverWorld.getPlayerByUuid(getOwnerUuid());
             if (owner != null) {
                 PetManager.registerPet(owner, this);
+                loadInventoryAsync();
+                ArcaniaTestMod.LOGGER.info("Read NBT and restored pet: {} for player: {}", getUuid(), getOwnerUuid());
+            } else {
+                ArcaniaTestMod.LOGGER.info("Pet loaded but owner not found: {}", getUuid());
             }
         }
     }
@@ -186,13 +200,17 @@ public class PetEntity extends TameableEntity implements GeoEntity {
         if (player != null) {
             this.ownerName = player.getName().getString();
             PetManager.registerPet(player, this);
+            loadInventoryAsync();
+            ArcaniaTestMod.LOGGER.info("Set owner for pet: {} to player: {}", getUuid(), player.getUuid());
         }
     }
 
     @Override
     public void remove(RemovalReason reason) {
-        if (!this.getWorld().isClient && getOwner() != null) {
+        if (!this.getWorld().isClient && getOwner() != null && reason == RemovalReason.DISCARDED) {
+            saveInventorySync();
             PetManager.unregisterPet((PlayerEntity) getOwner());
+            ArcaniaTestMod.LOGGER.info("Removed pet: {} for player: {}", getUuid(), getOwnerUuid());
         }
         super.remove(reason);
     }

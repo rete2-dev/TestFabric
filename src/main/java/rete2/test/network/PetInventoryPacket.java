@@ -3,39 +3,52 @@ package rete2.test.network;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
 import net.fabricmc.fabric.api.networking.v1.PacketByteBufs;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
+import net.minecraft.inventory.Inventory;
 import net.minecraft.inventory.SimpleInventory;
 import net.minecraft.item.ItemStack;
-import net.minecraft.nbt.NbtCompound;
-import net.minecraft.nbt.NbtList;
 import net.minecraft.network.PacketByteBuf;
+import net.minecraft.screen.ScreenHandler;
 import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.util.Identifier;
 import rete2.test.ArcaniaTestMod;
 import rete2.test.containers.PetInventoryScreenHandler;
 
-import java.util.Objects;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.UUID;
 
 public class PetInventoryPacket {
-    public static final Identifier PET_INVENTORY_PACKET_ID = new Identifier(ArcaniaTestMod.MOD_ID, "pet_inventory_packet");
+    public static final Identifier PET_INVENTORY_PACKET_ID = new Identifier(ArcaniaTestMod.MOD_ID, "pet_inventory");
 
     public static void register() {
         ClientPlayNetworking.registerGlobalReceiver(PET_INVENTORY_PACKET_ID, (client, handler, buf, responseSender) -> {
             UUID petUuid = buf.readUuid();
-            NbtList inventoryList = Objects.requireNonNull(buf.readNbt()).getList("Inventory", 10);
-            SimpleInventory inventory = new SimpleInventory(108);
-            for (int i = 0; i < inventoryList.size(); i++) {
-                NbtCompound itemNbt = inventoryList.getCompound(i);
-                int slot = itemNbt.getByte("Slot") & 255;
-                if (slot < inventory.size()) {
-                    inventory.setStack(slot, ItemStack.fromNbt(itemNbt));
+            boolean fullSync = buf.readBoolean();
+            Map<Integer, ItemStack> slotUpdates = new HashMap<>();
+
+            if (fullSync) {
+                for (int i = 0; i < 108; i++) {
+                    ItemStack stack = buf.readItemStack();
+                    slotUpdates.put(i, stack);
+                }
+            } else {
+                int updateCount = buf.readVarInt();
+                for (int i = 0; i < updateCount; i++) {
+                    int slot = buf.readVarInt();
+                    ItemStack stack = buf.readItemStack();
+                    slotUpdates.put(slot, stack);
                 }
             }
+
             client.execute(() -> {
-                if (client.player != null && client.player.currentScreenHandler instanceof PetInventoryScreenHandler screenHandler) {
-                    screenHandler.updatePetInventory(petUuid, inventory);
+                assert client.player != null;
+                ScreenHandler screenHandler = client.player.currentScreenHandler;
+                if (screenHandler instanceof PetInventoryScreenHandler petScreenHandler) {
+                    petScreenHandler.updatePetInventory(petUuid, slotUpdates);
+                    ArcaniaTestMod.LOGGER.info("Client received inventory update for pet: {}, fullSync: {}", petUuid, fullSync);
+                } else {
+                    ArcaniaTestMod.LOGGER.warn("Client received inventory packet but no PetInventoryScreenHandler open for pet: {}", petUuid);
                 }
-                System.out.println("Received PetInventoryPacket for UUID: " + petUuid + ", inventory size: " + inventory.size());
             });
         });
     }
@@ -43,20 +56,22 @@ public class PetInventoryPacket {
     public static void sendToClient(ServerPlayerEntity player, UUID petUuid, SimpleInventory inventory) {
         PacketByteBuf buf = PacketByteBufs.create();
         buf.writeUuid(petUuid);
-        NbtCompound nbt = new NbtCompound();
-        NbtList inventoryList = new NbtList();
+        buf.writeBoolean(true); // Full sync
         for (int i = 0; i < inventory.size(); i++) {
-            ItemStack stack = inventory.getStack(i);
-            if (!stack.isEmpty()) {
-                NbtCompound itemNbt = new NbtCompound();
-                itemNbt.putByte("Slot", (byte) i);
-                stack.writeNbt(itemNbt);
-                inventoryList.add(itemNbt);
-            }
+            buf.writeItemStack(inventory.getStack(i));
         }
-        nbt.put("Inventory", inventoryList);
-        buf.writeNbt(nbt);
         ServerPlayNetworking.send(player, PET_INVENTORY_PACKET_ID, buf);
-        System.out.println("Sent PetInventoryPacket for UUID: " + petUuid);
+        ArcaniaTestMod.LOGGER.info("Sent full inventory sync to player: {} for pet: {}", player.getName().getString(), petUuid);
+    }
+
+    public static void sendSlotUpdateToClient(ServerPlayerEntity player, UUID petUuid, int slot, ItemStack stack) {
+        PacketByteBuf buf = PacketByteBufs.create();
+        buf.writeUuid(petUuid);
+        buf.writeBoolean(false); // Partial sync
+        buf.writeVarInt(1); // Number of updates
+        buf.writeVarInt(slot);
+        buf.writeItemStack(stack);
+        ServerPlayNetworking.send(player, PET_INVENTORY_PACKET_ID, buf);
+        ArcaniaTestMod.LOGGER.info("Sent slot update to player: {} for pet: {}, slot: {}", player.getName().getString(), petUuid, slot);
     }
 }

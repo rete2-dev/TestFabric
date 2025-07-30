@@ -2,6 +2,7 @@ package rete2.test.logic;
 
 import net.fabricmc.fabric.api.entity.event.v1.ServerEntityWorldChangeEvents;
 import net.fabricmc.fabric.api.entity.event.v1.ServerPlayerEvents;
+import net.fabricmc.fabric.api.event.lifecycle.v1.ServerEntityEvents;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.EntityType;
@@ -12,6 +13,7 @@ import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.server.world.ServerWorld;
 import net.minecraft.util.math.Vec3d;
+import rete2.test.ArcaniaTestMod;
 import rete2.test.entities.PetEntity;
 import rete2.test.init.TestModEntities;
 
@@ -97,9 +99,26 @@ public class PetManager {
         // Срабатывает, когда игрок отключается от сервера
         ServerPlayConnectionEvents.DISCONNECT.register((handler, server) -> {
             ServerPlayerEntity player = handler.getPlayer();
-            unregisterPet(player);
-            System.out.println("Cleared pet mapping for player " + player.getName().getString() + " on disconnect");
+            PetEntity pet = PetManager.getPet(player, player.getServerWorld());
+            if (pet != null) {
+                PetInventoryStorage.saveInventorySync(player.getUuid(), pet.getInventory());
+                PetManager.unregisterPet(player);
+                ArcaniaTestMod.LOGGER.info("Saved pet inventory on player disconnect: {}", player.getUuid());
+            }
         });
+
+        // Обработка перехода в другое измерение
+        ServerEntityEvents.ENTITY_UNLOAD.register((entity, world) -> {
+            if (entity instanceof PetEntity pet && !world.isClient) {
+                PlayerEntity owner = (PlayerEntity) pet.getOwner();
+                if (owner != null) {
+                    PetInventoryStorage.saveInventorySync(owner.getUuid(), pet.getInventory());
+                    PetManager.unregisterPet(owner);
+                    ArcaniaTestMod.LOGGER.info("Saved pet inventory on dimension change or unload: {}", owner.getUuid());
+                }
+            }
+        });
+
     }
 
     private static void teleportPetToOwner(PetEntity pet, PlayerEntity owner, ServerWorld targetWorld) {

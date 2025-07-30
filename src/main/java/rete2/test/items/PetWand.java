@@ -17,6 +17,7 @@ import net.minecraft.world.World;
 import rete2.test.client.renders.PetWandRenderer;
 import rete2.test.entities.PetEntity;
 import rete2.test.init.TestModEntities;
+import rete2.test.logic.PetInventoryStorage;
 import rete2.test.logic.PetManager;
 import software.bernie.geckolib.animatable.GeoItem;
 import software.bernie.geckolib.animatable.client.RenderProvider;
@@ -73,13 +74,10 @@ public final class PetWand extends Item implements GeoItem {
         return this.cache;
     }
 
-
     @Override
     public boolean canBeNested() {
         return false;
     }
-
-
 
     @Override
     public TypedActionResult<ItemStack> use(World world, PlayerEntity user, Hand hand) {
