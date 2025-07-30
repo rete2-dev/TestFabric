@@ -9,17 +9,21 @@ import net.minecraft.entity.passive.PassiveEntity;
 import net.minecraft.entity.passive.TameableEntity;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.inventory.SimpleInventory;
+import net.minecraft.item.ItemStack;
 import net.minecraft.nbt.NbtCompound;
 import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.server.world.ServerWorld;
 import net.minecraft.util.ActionResult;
 import net.minecraft.util.Hand;
+import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Vec3d;
 import net.minecraft.world.EntityView;
+import net.minecraft.world.TeleportTarget;
 import net.minecraft.world.World;
 import org.jetbrains.annotations.Nullable;
 import rete2.test.ArcaniaTestMod;
 import rete2.test.containers.PetInventoryScreenHandler;
+import rete2.test.entities.ai.FollowOwnerGoal;
 import rete2.test.logic.PetInventoryStorage;
 import rete2.test.logic.PetManager;
 import rete2.test.network.PetInventoryPacket;
@@ -46,8 +50,9 @@ public class PetEntity extends TameableEntity implements GeoEntity {
         super(entityType, world);
         setInvulnerable(true);
         initializeGoals();
-        if (!world.isClient && getOwnerUuid() != null) {
-            loadInventoryAsync();
+        if (!world.isClient && getOwnerUuid() != null && world instanceof ServerWorld serverWorld) {
+            ArcaniaTestMod.LOGGER.info("Создание PetEntity с UUID: {} для игрока: {}", getUuid(), getOwnerUuid());
+            loadInventorySync(serverWorld);
         }
     }
 
@@ -82,6 +87,7 @@ public class PetEntity extends TameableEntity implements GeoEntity {
                 serverPlayer.openHandledScreen(new PetInventoryScreenHandler.Factory(this));
                 PetInventoryPacket.sendToClient(serverPlayer, this.getUuid(), this.getInventory());
                 interactCooldown = 10;
+                ArcaniaTestMod.LOGGER.info("Открыт инвентарь питомца {} для игрока: {}", getUuid(), player.getUuid());
                 return ActionResult.SUCCESS;
             }
         }
@@ -102,7 +108,7 @@ public class PetEntity extends TameableEntity implements GeoEntity {
                     setOwner(owner);
                     setTamed(true);
                     initializeGoals();
-                    ArcaniaTestMod.LOGGER.info("Restored owner for pet: {} to player: {}", getUuid(), owner.getUuid());
+                    ArcaniaTestMod.LOGGER.info("Восстановлен владелец для питомца: {} для игрока: {}", getUuid(), owner.getUuid());
                 }
             }
         }
@@ -129,28 +135,29 @@ public class PetEntity extends TameableEntity implements GeoEntity {
         return null;
     }
 
-    private void loadInventoryAsync() {
+    public void loadInventorySync(ServerWorld world) {
         if (getOwnerUuid() != null) {
-            PetInventoryStorage.loadInventoryAsync(getOwnerUuid()).thenAccept(inventory -> {
-                if (!this.isRemoved()) {
-                    for (int i = 0; i < Math.min(this.inventory.size(), inventory.size()); i++) {
-                        this.inventory.setStack(i, inventory.getStack(i));
-                    }
-                    ArcaniaTestMod.LOGGER.info("Loaded inventory for pet of player: {}", getOwnerUuid());
-                } else {
-                    ArcaniaTestMod.LOGGER.warn("Pet removed before inventory could be loaded for player: {}", getOwnerUuid());
+            ArcaniaTestMod.LOGGER.info("Синхронная загрузка инвентаря для питомца: {}, игрока: {}", getUuid(), getOwnerUuid());
+            SimpleInventory loadedInventory = PetInventoryStorage.loadInventorySync(getOwnerUuid(), world);
+            for (int i = 0; i < Math.min(this.inventory.size(), loadedInventory.size()); i++) {
+                ItemStack stack = loadedInventory.getStack(i);
+                this.inventory.setStack(i, stack);
+                if (!stack.isEmpty()) {
+                    ArcaniaTestMod.LOGGER.debug("Установлен предмет в слот {}: {}", i, stack);
                 }
-            }).exceptionally(throwable -> {
-                ArcaniaTestMod.LOGGER.error("Failed to load inventory for pet of player: {}", getOwnerUuid(), throwable);
-                return null;
-            });
+            }
+            ArcaniaTestMod.LOGGER.info("Успешно загружен инвентарь для питомца: {}, игрока: {}", getUuid(), getOwnerUuid());
+        } else {
+            ArcaniaTestMod.LOGGER.warn("Не удалось загрузить инвентарь для питомца: {}, ownerUuid is null", getUuid());
         }
     }
 
-    private void saveInventorySync() {
+    public void saveInventorySync(ServerWorld world) {
         if (getOwnerUuid() != null) {
-            PetInventoryStorage.saveInventorySync(getOwnerUuid(), this.inventory);
-            ArcaniaTestMod.LOGGER.info("Synchronously saved inventory for pet of player: {}", getOwnerUuid());
+            ArcaniaTestMod.LOGGER.info("Синхронное сохранение инвентаря для питомца: {}, игрока: {}", getUuid(), getOwnerUuid());
+            PetInventoryStorage.saveInventorySync(getOwnerUuid(), this.inventory, world);
+        } else {
+            ArcaniaTestMod.LOGGER.warn("Не удалось сохранить инвентарь для питомца: {}, ownerUuid is null", getUuid());
         }
     }
 
@@ -164,8 +171,12 @@ public class PetEntity extends TameableEntity implements GeoEntity {
         if (getOwner() != null) {
             nbt.putString("OwnerName", getOwner().getName().getString());
         }
-        saveInventorySync();
-        ArcaniaTestMod.LOGGER.info("Wrote NBT for pet: {}", getUuid());
+        if (getWorld() instanceof ServerWorld serverWorld) {
+            saveInventorySync(serverWorld);
+        } else {
+            ArcaniaTestMod.LOGGER.warn("ServerWorld not available when writing NBT for pet: {}", getUuid());
+        }
+        ArcaniaTestMod.LOGGER.info("Записан NBT для питомца: {}", getUuid());
         return nbt;
     }
 
@@ -186,11 +197,13 @@ public class PetEntity extends TameableEntity implements GeoEntity {
             PlayerEntity owner = serverWorld.getPlayerByUuid(getOwnerUuid());
             if (owner != null) {
                 PetManager.registerPet(owner, this);
-                loadInventoryAsync();
-                ArcaniaTestMod.LOGGER.info("Read NBT and restored pet: {} for player: {}", getUuid(), getOwnerUuid());
+                loadInventorySync(serverWorld);
+                ArcaniaTestMod.LOGGER.info("Прочитан NBT и восстановлен питомец: {} для игрока: {}", getUuid(), getOwnerUuid());
             } else {
-                ArcaniaTestMod.LOGGER.info("Pet loaded but owner not found: {}", getUuid());
+                ArcaniaTestMod.LOGGER.info("Питомец загружен, но владелец не найден: {}", getUuid());
             }
+        } else {
+            ArcaniaTestMod.LOGGER.warn("Не удалось загрузить инвентарь при чтении NBT для питомца: {}, ownerUuid or ServerWorld is null", getUuid());
         }
     }
 
@@ -200,19 +213,30 @@ public class PetEntity extends TameableEntity implements GeoEntity {
         if (player != null) {
             this.ownerName = player.getName().getString();
             PetManager.registerPet(player, this);
-            loadInventoryAsync();
-            ArcaniaTestMod.LOGGER.info("Set owner for pet: {} to player: {}", getUuid(), player.getUuid());
+            if (getWorld() instanceof ServerWorld serverWorld) {
+                loadInventorySync(serverWorld);
+            } else {
+                ArcaniaTestMod.LOGGER.warn("ServerWorld not available when setting owner for pet: {}", getUuid());
+            }
+            ArcaniaTestMod.LOGGER.info("Установлен владелец для питомца: {} для игрока: {}", getUuid(), player.getUuid());
         }
     }
 
     @Override
     public void remove(RemovalReason reason) {
-        if (!this.getWorld().isClient && getOwner() != null && reason == RemovalReason.DISCARDED) {
-            saveInventorySync();
+        if (!this.getWorld().isClient && getOwner() != null && getWorld() instanceof ServerWorld serverWorld) {
+            ArcaniaTestMod.LOGGER.info("Удаление питомца: {}, сохранение инвентаря для игрока: {}", getUuid(), getOwnerUuid());
+            saveInventorySync(serverWorld);
             PetManager.unregisterPet((PlayerEntity) getOwner());
-            ArcaniaTestMod.LOGGER.info("Removed pet: {} for player: {}", getUuid(), getOwnerUuid());
         }
         super.remove(reason);
+        ArcaniaTestMod.LOGGER.info("Питомец удален: {} с причиной: {}", getUuid(), reason);
+    }
+
+    @Override
+    public @Nullable TeleportTarget getTeleportTarget(ServerWorld destination) {
+        ArcaniaTestMod.LOGGER.info("Pet {} attempted to teleport to world {}, but portal usage is disabled", getUuid(), destination.getRegistryKey().getValue());
+        return null; // Запрещаем телепортацию через порталы
     }
 
     @Override
@@ -241,80 +265,4 @@ public class PetEntity extends TameableEntity implements GeoEntity {
         return getWorld();
     }
 
-    private static class FollowOwnerGoal extends Goal {
-        private final PetEntity pet;
-        private final double speed;
-        private final float maxDistance;
-        private final float desiredDistance;
-        private PlayerEntity owner;
-        private int updateCountdownTicks;
-
-        public FollowOwnerGoal(PetEntity pet, double speed, float maxDistance, float desiredDistance) {
-            this.pet = pet;
-            this.speed = speed;
-            this.maxDistance = maxDistance;
-            this.desiredDistance = desiredDistance;
-            this.setControls(EnumSet.of(Control.MOVE, Control.LOOK));
-        }
-
-        @Override
-        public boolean canStart() {
-            this.owner = (PlayerEntity) this.pet.getOwner();
-            if (this.owner == null || this.pet.isSitting()) {
-                return false;
-            }
-            double distance = this.pet.squaredDistanceTo(this.owner);
-            return distance > this.desiredDistance * this.desiredDistance;
-        }
-
-        @Override
-        public boolean shouldContinue() {
-            if (this.owner == null || this.pet.isSitting()) {
-                return false;
-            }
-            double distance = this.pet.squaredDistanceTo(this.owner);
-            return distance > this.desiredDistance * this.desiredDistance;
-        }
-
-        @Override
-        public void start() {
-            this.updateCountdownTicks = 0;
-        }
-
-        @Override
-        public void stop() {
-            this.owner = null;
-            this.pet.getNavigation().stop();
-        }
-
-        @Override
-        public void tick() {
-            if (this.owner == null) return;
-
-            this.pet.getLookControl().lookAt(this.owner, 30.0F, 30.0F);
-            if (--this.updateCountdownTicks <= 0) {
-                this.updateCountdownTicks = 10;
-                double distance = this.pet.squaredDistanceTo(this.owner);
-                if (distance > this.maxDistance * this.maxDistance) {
-                    this.teleportToOwner();
-                } else if (distance > this.desiredDistance * this.desiredDistance) {
-                    this.pet.getNavigation().startMovingTo(this.owner, this.speed);
-                } else {
-                    this.pet.getNavigation().stop();
-                }
-            }
-        }
-
-        private void teleportToOwner() {
-            if (this.owner == null || !(this.pet.getWorld() instanceof ServerWorld)) return;
-
-            Vec3d ownerPos = this.owner.getPos();
-            for (int i = 0; i < 10; ++i) {
-                double x = ownerPos.x + (this.pet.random.nextDouble() - 0.5D) * 4.0D;
-                double y = ownerPos.y + (this.pet.random.nextDouble() - 0.5D) * 4.0D;
-                double z = ownerPos.z + (this.pet.random.nextDouble() - 0.5D) * 4.0D;
-                if (this.pet.teleport(x, y, z, false)) return;
-            }
-        }
-    }
 }

@@ -9,6 +9,7 @@ import net.minecraft.screen.NamedScreenHandlerFactory;
 import net.minecraft.screen.ScreenHandler;
 import net.minecraft.screen.slot.Slot;
 import net.minecraft.server.network.ServerPlayerEntity;
+import net.minecraft.server.world.ServerWorld;
 import net.minecraft.text.Text;
 import rete2.test.ArcaniaTestMod;
 import rete2.test.entities.PetEntity;
@@ -21,7 +22,7 @@ import java.util.UUID;
 
 public class PetInventoryScreenHandler extends ScreenHandler {
     private final PetEntity pet;
-    private Inventory petInventory;
+    private final Inventory petInventory;
     private final UUID petUuid;
 
     public PetInventoryScreenHandler(int syncId, PlayerInventory playerInventory, PetEntity pet, UUID petUuid) {
@@ -48,7 +49,9 @@ public class PetInventoryScreenHandler extends ScreenHandler {
                         super.setStack(stack);
                         if (!playerInventory.player.getWorld().isClient && (!ItemStack.areEqual(oldStack, stack))) {
                             PetInventoryPacket.sendSlotUpdateToClient((ServerPlayerEntity) playerInventory.player, petUuid, slotIndex, stack);
-                            PetInventoryStorage.saveInventoryAsync(playerInventory.player.getUuid(), (SimpleInventory) petInventory);
+                            if (playerInventory.player.getWorld() instanceof ServerWorld serverWorld) {
+                                PetInventoryStorage.saveInventoryAsync(playerInventory.player.getUuid(), (SimpleInventory) petInventory, serverWorld);
+                            }
                         }
                     }
                 });
@@ -117,9 +120,9 @@ public class PetInventoryScreenHandler extends ScreenHandler {
             } else {
                 slot.markDirty();
             }
-            if (!player.getWorld().isClient) {
+            if (!player.getWorld().isClient && player.getWorld() instanceof ServerWorld serverWorld) {
                 PetInventoryPacket.sendSlotUpdateToClient((ServerPlayerEntity) player, petUuid, slotIndex, originalStack);
-                PetInventoryStorage.saveInventoryAsync(player.getUuid(), (SimpleInventory) petInventory);
+                PetInventoryStorage.saveInventoryAsync(player.getUuid(), (SimpleInventory) petInventory, serverWorld);
             }
         }
         return stack;
@@ -128,8 +131,8 @@ public class PetInventoryScreenHandler extends ScreenHandler {
     @Override
     public void onClosed(PlayerEntity player) {
         super.onClosed(player);
-        if (!player.getWorld().isClient && pet != null) {
-            PetInventoryStorage.saveInventoryAsync(player.getUuid(), (SimpleInventory) petInventory);
+        if (!player.getWorld().isClient && pet != null && player.getWorld() instanceof ServerWorld serverWorld) {
+            PetInventoryStorage.saveInventoryAsync(player.getUuid(), (SimpleInventory) petInventory, serverWorld);
         }
     }
 

@@ -25,7 +25,6 @@ public abstract class MixinPlayerEntity {
                 break;
             }
         }
-
     }
 
     @Inject(at = @At("TAIL"), method = "<init>")

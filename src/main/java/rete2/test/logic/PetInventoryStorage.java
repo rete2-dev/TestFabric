@@ -1,123 +1,106 @@
 package rete2.test.logic;
 
-import com.google.gson.Gson;
-import com.google.gson.GsonBuilder;
-import com.google.gson.JsonArray;
-import com.google.gson.JsonObject;
 import net.minecraft.inventory.SimpleInventory;
 import net.minecraft.item.ItemStack;
 import net.minecraft.nbt.NbtCompound;
-import net.minecraft.nbt.StringNbtReader;
+import net.minecraft.nbt.NbtIo;
+import net.minecraft.nbt.NbtList;
+import net.minecraft.server.world.ServerWorld;
+import net.minecraft.util.WorldSavePath;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import rete2.test.ArcaniaTestMod;
-import java.io.*;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
-import java.util.HashMap;
-import java.util.Map;
+
+import java.io.File;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 
 public class PetInventoryStorage {
-    private static final Path CONFIG_PATH = Paths.get("config", ArcaniaTestMod.MOD_ID, "pet_inventories.json");
-    private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
-    private static final Map<UUID, SimpleInventory> inventoryCache = new HashMap<>();
+    private static final Logger LOGGER = LoggerFactory.getLogger(ArcaniaTestMod.MOD_ID + "_storage");
+    private static final String STORAGE_DIR = "arcania_pet_inventories";
 
     public static void init() {
+        LOGGER.info("Инициализация PetInventoryStorage");
+    }
+
+    public static CompletableFuture<SimpleInventory> loadInventoryAsync(UUID playerUuid, ServerWorld world) {
+        LOGGER.info("Попытка асинхронной загрузки инвентаря для игрока: {}", playerUuid);
+        return CompletableFuture.supplyAsync(() -> loadInventorySync(playerUuid, world));
+    }
+
+    public static SimpleInventory loadInventorySync(UUID playerUuid, ServerWorld world) {
         try {
-            Files.createDirectories(CONFIG_PATH.getParent());
-            if (!Files.exists(CONFIG_PATH)) {
-                Files.createFile(CONFIG_PATH);
-                Files.writeString(CONFIG_PATH, "{}");
+            File file = getInventoryFile(playerUuid, world);
+            LOGGER.info("Проверка файла инвентаря: {}", file.getAbsolutePath());
+            if (!file.exists()) {
+                LOGGER.info("Файл инвентаря не найден для игрока: {}", playerUuid);
+                return new SimpleInventory(108);
             }
-        } catch (IOException e) {
-            ArcaniaTestMod.LOGGER.error("Failed to initialize pet inventory storage", e);
+
+            NbtCompound nbt = NbtIo.readCompressed(file);
+            SimpleInventory inventory = new SimpleInventory(108);
+            NbtList items = nbt.getList("Items", 10); // 10 - тип NbtCompound
+            LOGGER.info("Загружено {} элементов из файла для игрока: {}", items.size(), playerUuid);
+            for (int i = 0; i < items.size() && i < inventory.size(); i++) {
+                NbtCompound itemNbt = items.getCompound(i);
+                int slot = itemNbt.getInt("Slot");
+                if (slot >= 0 && slot < inventory.size()) {
+                    ItemStack stack = ItemStack.fromNbt(itemNbt);
+                    inventory.setStack(slot, stack);
+                    LOGGER.debug("Загружен предмет в слот {}: {}", slot, stack);
+                }
+            }
+            LOGGER.info("Успешно загружен инвентарь для игрока: {}", playerUuid);
+            return inventory;
+        } catch (Exception e) {
+            LOGGER.error("Не удалось загрузить инвентарь для игрока: {}", playerUuid, e);
+            return new SimpleInventory(108);
         }
     }
 
-    public static CompletableFuture<SimpleInventory> loadInventoryAsync(UUID playerUuid) {
-        return CompletableFuture.supplyAsync(() -> {
-            synchronized (inventoryCache) {
-                if (inventoryCache.containsKey(playerUuid)) {
-                    ArcaniaTestMod.LOGGER.info("Loaded inventory from cache for player: {}", playerUuid);
-                    return inventoryCache.get(playerUuid);
-                }
-                try {
-                    String json = Files.readString(CONFIG_PATH);
-                    JsonObject jsonObject = GSON.fromJson(json, JsonObject.class);
-                    SimpleInventory inventory = new SimpleInventory(108);
-                    if (jsonObject.has(playerUuid.toString())) {
-                        JsonArray items = jsonObject.getAsJsonArray(playerUuid.toString());
-                        for (int i = 0; i < Math.min(items.size(), 108); i++) {
-                            NbtCompound nbt = JsonToNbt(items.get(i).getAsJsonObject());
-                            inventory.setStack(i, ItemStack.fromNbt(nbt));
-                        }
-                        ArcaniaTestMod.LOGGER.info("Loaded inventory from file for player: {}, items: {}", playerUuid, items.size());
-                    } else {
-                        ArcaniaTestMod.LOGGER.info("No inventory found in file for player: {}", playerUuid);
-                    }
-                    inventoryCache.put(playerUuid, inventory);
-                    return inventory;
-                } catch (IOException e) {
-                    ArcaniaTestMod.LOGGER.error("Failed to load inventory for player: {}", playerUuid, e);
-                    return new SimpleInventory(108);
-                }
-            }
-        });
+    public static void saveInventoryAsync(UUID playerUuid, SimpleInventory inventory, ServerWorld world) {
+        LOGGER.info("Запуск асинхронного сохранения инвентаря для игрока: {}", playerUuid);
+        CompletableFuture.runAsync(() -> saveInventorySync(playerUuid, inventory, world));
     }
 
-    public static void saveInventoryAsync(UUID playerUuid, SimpleInventory inventory) {
-        CompletableFuture.runAsync(() -> {
-            synchronized (inventoryCache) {
-                saveInventoryInternal(playerUuid, inventory);
-            }
-        });
-    }
-
-    public static void saveInventorySync(UUID playerUuid, SimpleInventory inventory) {
-        synchronized (inventoryCache) {
-            saveInventoryInternal(playerUuid, inventory);
-        }
-    }
-
-    private static void saveInventoryInternal(UUID playerUuid, SimpleInventory inventory) {
-        inventoryCache.put(playerUuid, inventory);
+    public static void saveInventorySync(UUID playerUuid, SimpleInventory inventory, ServerWorld world) {
         try {
-            String json = Files.readString(CONFIG_PATH);
-            JsonObject jsonObject = GSON.fromJson(json, JsonObject.class);
-            if (jsonObject == null) {
-                jsonObject = new JsonObject();
-            }
-            JsonArray items = new JsonArray();
+            File file = getInventoryFile(playerUuid, world);
+            LOGGER.info("Сохранение инвентаря в файл: {}", file.getAbsolutePath());
+            file.getParentFile().mkdirs();
+
+            NbtCompound nbt = new NbtCompound();
+            NbtList items = new NbtList();
             int itemCount = 0;
             for (int i = 0; i < inventory.size(); i++) {
                 ItemStack stack = inventory.getStack(i);
                 if (!stack.isEmpty()) {
-                    JsonObject itemJson = NbtToJson(stack.writeNbt(new NbtCompound()));
-                    items.add(itemJson);
+                    NbtCompound itemNbt = new NbtCompound();
+                    itemNbt.putInt("Slot", i);
+                    stack.writeNbt(itemNbt);
+                    items.add(itemNbt);
                     itemCount++;
+                    LOGGER.debug("Сохранён предмет в слот {}: {}", i, stack);
                 }
             }
-            jsonObject.add(playerUuid.toString(), items);
-            Files.writeString(CONFIG_PATH, GSON.toJson(jsonObject));
-            ArcaniaTestMod.LOGGER.info("Saved inventory for player: {}, items: {}", playerUuid, itemCount);
-        } catch (IOException e) {
-            ArcaniaTestMod.LOGGER.error("Failed to save inventory for player: {}", playerUuid, e);
-        }
-    }
+            nbt.put("Items", items);
+            LOGGER.info("Подготовлено {} элементов для сохранения для игрока: {}", itemCount, playerUuid);
 
-    private static JsonObject NbtToJson(NbtCompound nbt) {
-        String nbtString = nbt.toString();
-        return GSON.fromJson(nbtString, JsonObject.class);
-    }
-
-    private static NbtCompound JsonToNbt(JsonObject json) {
-        try {
-            String jsonString = GSON.toJson(json);
-            return StringNbtReader.parse(jsonString);
+            NbtIo.writeCompressed(nbt, file);
+            LOGGER.info("Успешно сохранен инвентарь для игрока: {}", playerUuid);
         } catch (Exception e) {
-            ArcaniaTestMod.LOGGER.error("Failed to convert JSON to NBT: {}", json, e);
-            return new NbtCompound();
+            LOGGER.error("Не удалось сохранить инвентарь для игрока: {}", playerUuid, e);
         }
+    }
+
+    private static File getInventoryFile(UUID playerUuid, ServerWorld world) {
+        if (world == null) {
+            LOGGER.error("ServerWorld is null для игрока: {}", playerUuid);
+            throw new IllegalStateException("Не удалось получить доступ к миру для хранения инвентаря");
+        }
+        File storageDir = new File(world.getServer().getSavePath(WorldSavePath.ROOT).toFile(), STORAGE_DIR);
+        File file = new File(storageDir, playerUuid.toString() + ".nbt");
+        LOGGER.info("Получен путь к файлу инвентаря: {}", file.getAbsolutePath());
+        return file;
     }
 }
