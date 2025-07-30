@@ -14,7 +14,7 @@ public class TestModEntities {
     public static final EntityType<PetEntity> PET_ENTITY = Registry.register(
             Registries.ENTITY_TYPE,
             Identifier.of(ArcaniaTestMod.MOD_ID, "arcania_pet_entity"),
-            EntityType.Builder.create(PetEntity::new, SpawnGroup.CREATURE).setDimensions(0.75f, 0.75f).build("arcania_pet_entity")
+            EntityType.Builder.create(PetEntity::new, SpawnGroup.CREATURE).setDimensions(1.75f, 1.75f).build("arcania_pet_entity")
     );
 
     public static void registerModEntities() {

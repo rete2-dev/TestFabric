@@ -22,7 +22,7 @@
       "rete2.test.ArcaniaTestMod"
     ],
     "client": [
-      "rete2.test.ArcaniaTestModClient"
+      "rete2.test.client.ArcaniaTestModClient"
     ]
   },
   "mixins": [

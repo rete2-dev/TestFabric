@@ -1,0 +1,13 @@
+{
+  "item.testmod_arcania.arcania_pet_wand": "§cПосох призыва питомца",
+  "item.arcania_test.pet_wand.tooltip1": "§eПКМ, чтобы призвать верного питомца.",
+  "item.arcania_test.pet_wand.tooltip2": "§eПитомец следует за вами на расстоянии 2 блоков.",
+  "item.arcania_test.pet_wand.tooltip3": "§eМожет плавать и поворачивает голову к вам, когда вы рядом.",
+  "item.arcania_test.pet_wand.tooltip4": "§eПовторный клик убирает питомца.",
+  "item.arcania_test.pet_wand.tooltip5": "§e",
+  "item.arcania_test.pet_wand.tooltip6": "§6Зажмите шифт, чтобы открыть полное описание",
+  "item.arcania_test.pet_wand.shift_tooltip1": "§cЖезл был выкован древними магами Аркании из звёздного кристалла.",
+  "item.arcania_test.pet_wand.shift_tooltip2": "§cЕго магия связывает душу питомца с владельцем, даруя вечную верность.",
+  "itemgroup.testmod_arcania": "§6Тестовый мод для Arcania",
+  "arcania_test.pet_inventory": "§6Инвентарь питомца"
+}

@@ -1,9 +1,15 @@
 package rete2.test.items;
 
+import net.minecraft.client.gui.screen.Screen;
+import net.minecraft.client.item.TooltipContext;
 import net.minecraft.client.render.item.BuiltinModelItemRenderer;
 import net.minecraft.entity.player.PlayerEntity;
+import net.minecraft.inventory.SimpleInventory;
 import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
+import net.minecraft.nbt.NbtCompound;
+import net.minecraft.nbt.NbtList;
+import net.minecraft.server.world.ServerWorld;
 import net.minecraft.text.Text;
 import net.minecraft.util.Hand;
 import net.minecraft.util.TypedActionResult;
@@ -11,6 +17,7 @@ import net.minecraft.world.World;
 import rete2.test.client.renders.PetWandRenderer;
 import rete2.test.entities.PetEntity;
 import rete2.test.init.TestModEntities;
+import rete2.test.logic.PetManager;
 import software.bernie.geckolib.animatable.GeoItem;
 import software.bernie.geckolib.animatable.client.RenderProvider;
 import software.bernie.geckolib.constant.DefaultAnimations;
@@ -73,34 +80,45 @@ public final class PetWand extends Item implements GeoItem {
     }
 
 
+
     @Override
     public TypedActionResult<ItemStack> use(World world, PlayerEntity user, Hand hand) {
         ItemStack itemStack = user.getStackInHand(hand);
         if (!world.isClient) {
-            // Проверяем, есть ли у игрока уже питомец
             List<PetEntity> existingPets = world.getEntitiesByClass(PetEntity.class, user.getBoundingBox().expand(100.0), pet -> pet.getOwnerUuid() != null && pet.getOwnerUuid().equals(user.getUuid()));
             if (!existingPets.isEmpty()) {
-                // Деспавним существующего питомца
                 for (PetEntity pet : existingPets) {
                     pet.discard();
-                    System.out.println("Despawned PetEntity for player " + user.getName().getString());
+                    PetManager.unregisterPet(user);
                 }
                 user.sendMessage(Text.of("Питомец деспавнился!"), false);
             } else {
-                // Призываем нового питомца
                 PetEntity pet = new PetEntity(TestModEntities.PET_ENTITY, world);
                 pet.setPosition(user.getX(), user.getY(), user.getZ());
                 pet.setOwner(user);
                 pet.setTamed(true);
                 if (world.spawnEntity(pet)) {
+                    PetManager.registerPet(user, pet);
                     user.sendMessage(Text.of("Питомец призван!"), false);
-                    System.out.println("Spawned PetEntity for player " + user.getName().getString() + " at position " + pet.getPos());
                 } else {
                     user.sendMessage(Text.of("Не удалось призвать питомца!"), false);
-                    System.out.println("Failed to spawn PetEntity for player " + user.getName().getString());
                 }
             }
         }
         return TypedActionResult.success(itemStack, world.isClient());
+    }
+
+    @Override
+    public void appendTooltip(ItemStack stack, World world, List<Text> tooltip, TooltipContext context) {
+        super.appendTooltip(stack, world, tooltip, context);
+        tooltip.add(Text.translatable("item.arcania_test.pet_wand.tooltip1"));
+        tooltip.add(Text.translatable("item.arcania_test.pet_wand.tooltip2"));
+        tooltip.add(Text.translatable("item.arcania_test.pet_wand.tooltip3"));
+        tooltip.add(Text.translatable("item.arcania_test.pet_wand.tooltip4"));
+        tooltip.add(Text.translatable("item.arcania_test.pet_wand.tooltip5"));
+        if (Screen.hasShiftDown()) {
+            tooltip.add(Text.translatable("item.arcania_test.pet_wand.shift_tooltip1"));
+            tooltip.add(Text.translatable("item.arcania_test.pet_wand.shift_tooltip2"));
+        } else tooltip.add(Text.translatable("item.arcania_test.pet_wand.tooltip6"));
     }
 }

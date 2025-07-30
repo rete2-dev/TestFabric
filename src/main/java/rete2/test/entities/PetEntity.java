@@ -8,12 +8,21 @@ import net.minecraft.entity.damage.DamageSource;
 import net.minecraft.entity.passive.PassiveEntity;
 import net.minecraft.entity.passive.TameableEntity;
 import net.minecraft.entity.player.PlayerEntity;
+import net.minecraft.inventory.SimpleInventory;
+import net.minecraft.item.ItemStack;
 import net.minecraft.nbt.NbtCompound;
+import net.minecraft.nbt.NbtList;
+import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.server.world.ServerWorld;
+import net.minecraft.util.ActionResult;
+import net.minecraft.util.Hand;
 import net.minecraft.util.math.Vec3d;
 import net.minecraft.world.EntityView;
 import net.minecraft.world.World;
 import org.jetbrains.annotations.Nullable;
+import rete2.test.containers.PetInventoryScreenHandler;
+import rete2.test.logic.PetManager;
+import rete2.test.network.PetInventoryPacket;
 import software.bernie.geckolib.animatable.GeoEntity;
 import software.bernie.geckolib.constant.DefaultAnimations;
 import software.bernie.geckolib.core.animatable.instance.AnimatableInstanceCache;
@@ -22,19 +31,33 @@ import software.bernie.geckolib.core.animation.AnimationController;
 import software.bernie.geckolib.util.GeckoLibUtil;
 
 import java.util.EnumSet;
+import java.util.List;
 
 public class PetEntity extends TameableEntity implements GeoEntity {
 
     private final AnimatableInstanceCache cache = GeckoLibUtil.createInstanceCache(this);
+    private int ownerCheckTicks = 0;
+    private static final int OWNER_CHECK_INTERVAL = 20;
+    private String ownerName;
+    private final SimpleInventory inventory = new SimpleInventory(108);
+    private int interactCooldown;
 
     public PetEntity(EntityType<? extends TameableEntity> entityType, World world) {
         super(entityType, world);
-        setInvulnerable(true); // Делаем питомца неуязвимым
+        setInvulnerable(true);
+        initializeGoals();
+    }
+
+    public SimpleInventory getInventory() {
+        return inventory;
+    }
+
+    private void initializeGoals() {
         this.goalSelector.add(1, new FollowOwnerGoal(this, 0.28D, 12.0F, 2.0F));
     }
+
     @Override
     protected EntityNavigation createNavigation(World world) {
-        // Используем AmphibiousNavigation для перемещения по суше и воде
         return new AmphibiousSwimNavigation(this, world);
     }
 
@@ -45,19 +68,61 @@ public class PetEntity extends TameableEntity implements GeoEntity {
 
     @Override
     public @Nullable PassiveEntity createChild(ServerWorld world, PassiveEntity entity) {
-        return null; // Питомец не размножается
+        return null;
     }
 
     @Override
-    public void tickMovement() {
-        super.tickMovement();
-        if (!this.getWorld().isClient && this.getOwner() != null) {
-            PlayerEntity owner = (PlayerEntity) this.getOwner();
-            double distanceToOwner = this.squaredDistanceTo(owner);
-            if (distanceToOwner <= 64.0D) { // 8 блоков (8^2 = 64)
-                this.lookAtEntity(owner, 30.0F, 30.0F); // Поворачиваем голову к игроку
+    public ActionResult interactMob(PlayerEntity player, Hand hand) {
+        if (interactCooldown > 0) return ActionResult.PASS;
+        if (!this.getWorld().isClient && player.getUuid().equals(getOwnerUuid())) {
+            if (player instanceof ServerPlayerEntity serverPlayer) {
+                serverPlayer.openHandledScreen(new PetInventoryScreenHandler.Factory(this));
+                PetInventoryPacket.sendToClient(serverPlayer, this.getUuid(), this.getInventory());
+                interactCooldown = 10;
+                return ActionResult.SUCCESS;
             }
         }
+        return super.interactMob(player, hand);
+    }
+
+    @Override
+    public void tick() {
+        super.tick();
+        if (interactCooldown > 0) {
+            interactCooldown--;
+        }
+        if (!this.getWorld().isClient && getOwner() == null && (getOwnerUuid() != null || ownerName != null)) {
+            if (ownerCheckTicks++ >= OWNER_CHECK_INTERVAL) {
+                ownerCheckTicks = 0;
+                PlayerEntity owner = findOwner();
+                if (owner != null) {
+                    setOwner(owner);
+                    setTamed(true);
+                    initializeGoals();
+                }
+            }
+        }
+    }
+
+    private PlayerEntity findOwner() {
+        if (getWorld() instanceof ServerWorld serverWorld) {
+            if (getOwnerUuid() != null) {
+                PlayerEntity owner = serverWorld.getPlayerByUuid(getOwnerUuid());
+                if (owner != null) {
+                    return owner;
+                }
+            }
+            if (ownerName != null) {
+                List<ServerPlayerEntity> players = serverWorld.getPlayers();
+                for (PlayerEntity player : players) {
+                    if (player.getName().getString().equals(ownerName)) {
+                        setOwnerUuid(player.getUuid());
+                        return player;
+                    }
+                }
+            }
+        }
+        return null;
     }
 
     @Override
@@ -66,7 +131,21 @@ public class PetEntity extends TameableEntity implements GeoEntity {
         if (getOwnerUuid() != null) {
             nbt.putUuid("Owner", getOwnerUuid());
         }
-        System.out.println("Saved PetEntity NBT for owner UUID: " + getOwnerUuid());
+        nbt.putBoolean("Tamed", isTamed());
+        if (getOwner() != null) {
+            nbt.putString("OwnerName", getOwner().getName().getString());
+        }
+        NbtList inventoryList = new NbtList();
+        for (int i = 0; i < inventory.size(); i++) {
+            ItemStack stack = inventory.getStack(i);
+            if (!stack.isEmpty()) {
+                NbtCompound itemNbt = new NbtCompound();
+                itemNbt.putByte("Slot", (byte) i);
+                stack.writeNbt(itemNbt);
+                inventoryList.add(itemNbt);
+            }
+        }
+        nbt.put("Inventory", inventoryList);
         return nbt;
     }
 
@@ -76,13 +155,51 @@ public class PetEntity extends TameableEntity implements GeoEntity {
         if (nbt.containsUuid("Owner")) {
             setOwnerUuid(nbt.getUuid("Owner"));
         }
-        setInvulnerable(true); // Гарантируем неуязвимость после загрузки
-        System.out.println("Loaded PetEntity NBT with owner UUID: " + getOwnerUuid());
+        setTamed(nbt.getBoolean("Tamed"));
+        if (nbt.contains("OwnerName")) {
+            ownerName = nbt.getString("OwnerName");
+        }
+        inventory.clear();
+        NbtList inventoryList = nbt.getList("Inventory", 10);
+        for (int i = 0; i < inventoryList.size(); i++) {
+            NbtCompound itemNbt = inventoryList.getCompound(i);
+            int slot = itemNbt.getByte("Slot") & 255;
+            if (slot < inventory.size()) {
+                inventory.setStack(slot, ItemStack.fromNbt(itemNbt));
+            }
+        }
+        setInvulnerable(true);
+        initializeGoals();
+        ownerCheckTicks = 0;
+        // Регистрируем питомца в PetManager после загрузки
+        if (getOwnerUuid() != null && getWorld() instanceof ServerWorld serverWorld) {
+            PlayerEntity owner = serverWorld.getPlayerByUuid(getOwnerUuid());
+            if (owner != null) {
+                PetManager.registerPet(owner, this);
+            }
+        }
+    }
+
+    @Override
+    public void setOwner(PlayerEntity player) {
+        super.setOwner(player);
+        if (player != null) {
+            this.ownerName = player.getName().getString();
+            PetManager.registerPet(player, this);
+        }
+    }
+
+    @Override
+    public void remove(RemovalReason reason) {
+        if (!this.getWorld().isClient && getOwner() != null) {
+            PetManager.unregisterPet((PlayerEntity) getOwner());
+        }
+        super.remove(reason);
     }
 
     @Override
     public boolean isInvulnerable() {
-        return true; // Питомец неуязвим для любого урона
+        return true;
     }
 
     @Override
@@ -91,6 +208,7 @@ public class PetEntity extends TameableEntity implements GeoEntity {
                 state.isMoving() ? state.setAndContinue(DefaultAnimations.WALK) : state.setAndContinue(DefaultAnimations.IDLE)));
     }
 
+    @Override
     public boolean isInvulnerableTo(DamageSource damageSource) {
         return true;
     }
@@ -109,7 +227,7 @@ public class PetEntity extends TameableEntity implements GeoEntity {
         private final PetEntity pet;
         private final double speed;
         private final float maxDistance;
-        private final float desiredDistance; // Целевое расстояние (2 блока)
+        private final float desiredDistance;
         private PlayerEntity owner;
         private int updateCountdownTicks;
 
@@ -128,7 +246,7 @@ public class PetEntity extends TameableEntity implements GeoEntity {
                 return false;
             }
             double distance = this.pet.squaredDistanceTo(this.owner);
-            return distance > this.desiredDistance * this.desiredDistance; // Начать движение, если дальше 2 блоков
+            return distance > this.desiredDistance * this.desiredDistance;
         }
 
         @Override
@@ -137,7 +255,7 @@ public class PetEntity extends TameableEntity implements GeoEntity {
                 return false;
             }
             double distance = this.pet.squaredDistanceTo(this.owner);
-            return distance > this.desiredDistance * this.desiredDistance; // Продолжать, если дальше 2 блоков
+            return distance > this.desiredDistance * this.desiredDistance;
         }
 
         @Override
@@ -160,16 +278,11 @@ public class PetEntity extends TameableEntity implements GeoEntity {
                 this.updateCountdownTicks = 10;
                 double distance = this.pet.squaredDistanceTo(this.owner);
                 if (distance > this.maxDistance * this.maxDistance) {
-                    // Телепортация, если питомец слишком далеко
                     this.teleportToOwner();
                 } else if (distance > this.desiredDistance * this.desiredDistance) {
-                    // Движение к владельцу, если дальше 2 блоков
                     this.pet.getNavigation().startMovingTo(this.owner, this.speed);
-                    System.out.println("PetEntity moving to owner at distance " + Math.sqrt(distance));
                 } else {
-                    // Остановить движение, если ближе 2 блоков
                     this.pet.getNavigation().stop();
-                    System.out.println("PetEntity stopped at distance " + Math.sqrt(distance));
                 }
             }
         }
@@ -177,16 +290,12 @@ public class PetEntity extends TameableEntity implements GeoEntity {
         private void teleportToOwner() {
             if (this.owner == null || !(this.pet.getWorld() instanceof ServerWorld)) return;
 
-            ServerWorld serverWorld = (ServerWorld) this.pet.getWorld();
             Vec3d ownerPos = this.owner.getPos();
             for (int i = 0; i < 10; ++i) {
                 double x = ownerPos.x + (this.pet.random.nextDouble() - 0.5D) * 4.0D;
                 double y = ownerPos.y + (this.pet.random.nextDouble() - 0.5D) * 4.0D;
                 double z = ownerPos.z + (this.pet.random.nextDouble() - 0.5D) * 4.0D;
-                if (this.pet.teleport(x, y, z, false)) {
-                    System.out.println("PetEntity teleported to owner " + this.owner.getName().getString() + " at position " + new Vec3d(x, y, z));
-                    return;
-                }
+                if (this.pet.teleport(x, y, z, false)) return;
             }
         }
     }

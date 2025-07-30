@@ -1,6 +1,8 @@
 package rete2.test.client.models;
 
+import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.util.Identifier;
+import net.minecraft.util.math.MathHelper;
 import rete2.test.ArcaniaTestMod;
 import rete2.test.entities.PetEntity;
 import software.bernie.geckolib.cache.object.GeoBone;
@@ -17,9 +19,33 @@ public class PetEntityModel extends DefaultedEntityGeoModel<PetEntity> {
     public void setCustomAnimations(PetEntity entity, long instanceId, AnimationState<PetEntity> animationState) {
         super.setCustomAnimations(entity, instanceId, animationState);
         CoreGeoBone head = getAnimationProcessor().getBone("h_head");
-        if (head != null) {
-            head.setRotX(entity.getPitch() * 0.017453292F);
-            head.setRotY(-entity.getHeadYaw() * 0.017453292F);
+        if (head != null && entity.getOwner() != null) {
+            PlayerEntity owner = (PlayerEntity) entity.getOwner();
+            if (entity.squaredDistanceTo(owner) <= 64.0D) { // 8 блоков
+                // Вычисляем углы поворота к игроку
+                double deltaX = owner.getX() - entity.getX();
+                double deltaY = (owner.getEyeY() - owner.getHeight() * 0.5D) - (entity.getY() + entity.getHeight() * 0.5D);
+                double deltaZ = owner.getZ() - entity.getZ();
+
+                // Угол поворота по горизонтали (yaw)
+                float yaw = (float) Math.toDegrees(Math.atan2(deltaZ, deltaX)) - 90.0F;
+                // Угол поворота по вертикали (pitch)
+                float pitch = (float) -Math.toDegrees(Math.atan2(deltaY, Math.sqrt(deltaX * deltaX + deltaZ * deltaZ)));
+
+                // Ограничиваем углы поворота для естественного вида
+                float maxYaw = 30.0F;
+                float maxPitch = 30.0F;
+                yaw = MathHelper.clamp(yaw - entity.getBodyYaw(), -maxYaw, maxYaw);
+                pitch = MathHelper.clamp(pitch, -maxPitch, maxPitch);
+
+                // Применяем поворот к кости головы
+                head.setRotY((float) Math.toRadians(-yaw));
+                head.setRotX((float) Math.toRadians(pitch));
+            } else {
+                // Сбрасываем поворот, если игрок слишком далеко
+                head.setRotX(0.0F);
+                head.setRotY(0.0F);
+            }
         }
     }
 
